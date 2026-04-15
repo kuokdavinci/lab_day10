@@ -17,6 +17,7 @@ Chế độ inject (Sprint 3 — bỏ fix refund để expectation fail / eval x
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from monitoring.freshness_check import check_manifest_freshness
+from monitoring.freshness_check import check_manifest_freshness, parse_iso
 from quality.expectations import run_expectations
 from transform.cleaning_rules import clean_rows, load_raw_csv, write_cleaned_csv, write_quarantine_csv
 
@@ -43,14 +44,16 @@ CLEAN_DIR = ART / "cleaned"
 def _build_embedding_function():
     from chromadb.utils import embedding_functions
 
-    provider = os.environ.get("EMBEDDING_PROVIDER", "sentence_transformer").strip().lower()
+    provider = os.environ.get("EMBEDDING_PROVIDER", "jina").strip().lower()
     model_name = os.environ.get("EMBEDDING_MODEL", "jina-embeddings-v3").strip()
-    if provider == "jina":
-        api_key = os.environ.get("JINA_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError("Missing JINA_API_KEY for EMBEDDING_PROVIDER=jina")
-        return embedding_functions.JinaEmbeddingFunction(api_key=api_key, model_name=model_name)
-    return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
+    if provider != "jina":
+        raise ValueError(f"Provider '{provider}' not supported. Set EMBEDDING_PROVIDER=jina")
+    
+    api_key = os.environ.get("JINA_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Missing JINA_API_KEY for EMBEDDING_PROVIDER=jina")
+    
+    return embedding_functions.JinaEmbeddingFunction(api_key=api_key, model_name=model_name)
 
 
 def _log(path: Path, line: str) -> None:
@@ -79,9 +82,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     log(f"run_id={run_id}")
     log(f"raw_records={raw_count}")
 
-    cleaned, quarantine = clean_rows(
+    # Bonus: Ingest Boundary Freshness Check (+1 point)
+    raw_exported = [r.get("exported_at", "") for r in rows if r.get("exported_at", "")]
+    if raw_exported:
+        latest_raw = max(raw_exported)
+        dt_raw = parse_iso(latest_raw)
+        if dt_raw:
+            sla_h = float(os.environ.get("FRESHNESS_SLA_HOURS", "24"))
+            age_h = (datetime.now(timezone.utc) - dt_raw).total_seconds() / 3600.0
+            st = "PASS" if age_h <= sla_h else "FAIL"
+            log(f"freshness_ingest_check={st} latest='{latest_raw}' age_hours={age_h:.2f}")
+
+    cleaned, quarantine, metric_impact = clean_rows(
         rows,
         apply_refund_window_fix=not args.no_refund_fix,
+        return_impact=True,
     )
     cleaned_path = CLEAN_DIR / f"cleaned_{run_id.replace(':', '-')}.csv"
     quar_path = QUAR_DIR / f"quarantine_{run_id.replace(':', '-')}.csv"
@@ -90,6 +105,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     log(f"cleaned_records={len(cleaned)}")
     log(f"quarantine_records={len(quarantine)}")
+    for key in sorted(metric_impact.keys()):
+        log(f"metric_impact[{key}]={metric_impact[key]}")
     log(f"cleaned_csv={cleaned_path.relative_to(ROOT)}")
     log(f"quarantine_csv={quar_path.relative_to(ROOT)}")
 
@@ -101,7 +118,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         log("PIPELINE_HALT: expectation suite failed (halt).")
         return 2
     if halt and args.skip_validate:
-        log("WARN: expectation failed but --skip-validate → tiếp tục embed (chỉ dùng cho demo Sprint 3).")
+        log("WARN: expectation failed but --skip-validate => continue embed (Sprint 3 demo).")
 
     # Embed
     embed_ok = cmd_embed_internal(
@@ -145,51 +162,52 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
     try:
         import chromadb
     except ImportError:
-        log("ERROR: chromadb chưa cài. pip install -r requirements.txt")
+        log("ERROR: chromadb missing. pip install chromadb")
         return False
 
     db_path = os.environ.get("CHROMA_DB_PATH", str(ROOT / "chroma_db"))
     collection_name = os.environ.get("CHROMA_COLLECTION", "day10_kb")
 
-    from transform.cleaning_rules import load_raw_csv as load_csv  # same loader
-
+    from transform.cleaning_rules import load_raw_csv as load_csv
     rows = load_csv(cleaned_csv)
     if not rows:
-        log("WARN: cleaned CSV rỗng — không embed.")
+        log("WARN: Cleaned CSV is empty. Skipping embedding.")
         return True
 
-    client = chromadb.PersistentClient(path=db_path)
     try:
+        client = chromadb.PersistentClient(path=db_path)
         emb = _build_embedding_function()
-    except ValueError as e:
-        log(f"ERROR: {e}")
-        return False
-    col = client.get_or_create_collection(name=collection_name, embedding_function=emb)
+        col = client.get_or_create_collection(name=collection_name, embedding_function=emb)
 
-    ids = [r["chunk_id"] for r in rows]
-    # Tránh “mồi cũ” trong top-k: xóa id không còn trong cleaned run này (index = snapshot publish).
-    try:
-        prev = col.get(include=[])
-        prev_ids = set(prev.get("ids") or [])
-        drop = sorted(prev_ids - set(ids))
-        if drop:
-            col.delete(ids=drop)
-            log(f"embed_prune_removed={len(drop)}")
+        ids = [r["chunk_id"] for r in rows]
+        
+        # Pruning old IDs
+        try:
+            prev = col.get(include=[])
+            prev_ids = set(prev.get("ids") or [])
+            drop = sorted(prev_ids - set(ids))
+            if drop:
+                col.delete(ids=drop)
+                log(f"embed_prune_removed={len(drop)}")
+        except Exception as e:
+            log(f"WARN: embed_prune failed: {e}")
+
+        documents = [r["chunk_text"] for r in rows]
+        metadatas = [
+            {
+                "doc_id": r.get("doc_id", ""),
+                "effective_date": r.get("effective_date", ""),
+                "run_id": run_id,
+            }
+            for r in rows
+        ]
+        
+        col.upsert(ids=ids, documents=documents, metadatas=metadatas)
+        log(f"embed_upsert_count={len(ids)} collection='{collection_name}'")
+        return True
     except Exception as e:
-        log(f"WARN: embed prune skip: {e}")
-    documents = [r["chunk_text"] for r in rows]
-    metadatas = [
-        {
-            "doc_id": r.get("doc_id", ""),
-            "effective_date": r.get("effective_date", ""),
-            "run_id": run_id,
-        }
-        for r in rows
-    ]
-    # Idempotent: upsert theo chunk_id
-    col.upsert(ids=ids, documents=documents, metadatas=metadatas)
-    log(f"embed_upsert count={len(ids)} collection={collection_name}")
-    return True
+        log(f"ERROR: Embedding failed: {type(e).__name__}: {str(e)}")
+        return False
 
 
 def cmd_freshness(args: argparse.Namespace) -> int:
@@ -204,6 +222,11 @@ def cmd_freshness(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    # Force UTF-8 for Windows terminal output
+    if sys.platform == "win32":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="Day 10 ETL pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -231,4 +254,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(1)

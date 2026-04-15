@@ -45,10 +45,18 @@ def main() -> int:
     qs = json.loads(qpath.read_text(encoding="utf-8"))
     db_path = os.environ.get("CHROMA_DB_PATH", str(ROOT / "chroma_db"))
     collection_name = os.environ.get("CHROMA_COLLECTION", "day10_kb")
-    model_name = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    provider = os.environ.get("EMBEDDING_PROVIDER", "jina").strip().lower()
+    model_name = os.environ.get("EMBEDDING_MODEL", "jina-embeddings-v3").strip()
+    if provider != "jina":
+        print("Only Jina embedding is supported. Set EMBEDDING_PROVIDER=jina", file=sys.stderr)
+        return 1
+    api_key = os.environ.get("JINA_API_KEY", "").strip()
+    if not api_key:
+        print("Missing JINA_API_KEY for EMBEDDING_PROVIDER=jina", file=sys.stderr)
+        return 1
 
     client = chromadb.PersistentClient(path=db_path)
-    emb = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
+    emb = embedding_functions.JinaEmbeddingFunction(api_key=api_key, model_name=model_name)
     col = client.get_collection(name=collection_name, embedding_function=emb)
 
     out = Path(args.out)

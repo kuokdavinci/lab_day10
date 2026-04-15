@@ -89,7 +89,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-**Lần đầu** SentenceTransformers có thể tải model `all-MiniLM-L6-v2` (~90MB) — cần mạng.
+**Lần đầu** Jina embedding cần `JINA_API_KEY` hợp lệ và kết nối mạng ổn định.
 
 ---
 

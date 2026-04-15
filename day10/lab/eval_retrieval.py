@@ -27,12 +27,12 @@ def _build_embedding_function():
 
     provider = os.environ.get("EMBEDDING_PROVIDER", "jina").strip().lower()
     model_name = os.environ.get("EMBEDDING_MODEL", "jina-embeddings-v3").strip()
-    if provider == "jina":
-        api_key = os.environ.get("JINA_API_KEY", "").strip()
-        if not api_key:
-            raise ValueError("Missing JINA_API_KEY for EMBEDDING_PROVIDER=jina")
-        return embedding_functions.JinaEmbeddingFunction(api_key=api_key, model_name=model_name)
-    return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
+    if provider != "jina":
+        raise ValueError("Only Jina embedding is supported. Set EMBEDDING_PROVIDER=jina")
+    api_key = os.environ.get("JINA_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Missing JINA_API_KEY for EMBEDDING_PROVIDER=jina")
+    return embedding_functions.JinaEmbeddingFunction(api_key=api_key, model_name=model_name)
 
 
 def main() -> int:
