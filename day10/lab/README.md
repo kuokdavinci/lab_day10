@@ -9,6 +9,23 @@
 
 ---
 
+## 🚀 Quick Start (Cho Giảng Viên)
+
+Để kiểm tra nhanh toàn bộ Pipeline và kết quả Grading, vui lòng chạy các lệnh sau:
+
+```bash
+# 1. Chạy toàn bộ Pipeline (Ingest -> Clean -> Validate -> Embed -> Freshness Check)
+uv run python etl_pipeline.py run --run-id final-check
+
+# 2. Chạy chấm điểm tự động (Grading)
+uv run python grading_run.py --out artifacts/eval/grading_run.jsonl
+
+# 3. Kiểm tra nhanh tính hợp lệ và Merit (Sanity Check)
+uv run python instructor_quick_check.py --manifest artifacts/manifests/manifest_final-check.json --grading artifacts/eval/grading_run.jsonl
+```
+
+---
+
 ## Bối cảnh
 
 Vector store và agent Day 09 chỉ ổn nếu **pipeline ingest → clean → validate → publish** ổn. Lab này mô phỏng:
