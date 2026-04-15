@@ -71,8 +71,11 @@ Collection `day10_kb` là lớp dữ liệu đã qua clean/validate, có thể d
 
 ---
 
-## Peer review (Phần E)
+## Peer review (Phần E) (Từ người của nhóm khác)
 
-1. Rule/expectation nào đang có tín hiệu giả dương hoặc giả âm?
-2. Nếu Jina API lỗi tạm thời, nhóm degrade pipeline ở điểm nào để không mất dữ liệu?
-3. SLA freshness nên đo ở ingest boundary hay publish boundary cho use case này?
+1. **Rule/expectation nào đang có tín hiệu giả dương hoặc giả âm?**
+   - **Trả lời:** Rule lọc các câu văn quá ngắn (dưới 24 ký tự) dễ gây ra sai sót nhất. Có những tên điều khoản tuy ngắn nhưng lại rất quan trọng cho việc tìm kiếm chính xác. Giải pháp là gộp các đoạn ngắn này vào nội dung phía sau thay vì đưa vào quarantine.
+2. **Nếu Jina API lỗi tạm thời, nhóm degrade pipeline ở điểm nào để không mất dữ liệu?**
+   - **Trả lời:** Hệ thống sẽ tạm dừng tại bước Embedding. Do dữ liệu sạch đã được kiểm định và lưu trữ an toàn trong file CSV, chúng ta có thể thực hiện Embed lại sau khi API hoạt động bình thường mà không cần xử lý lại dữ liệu thô từ đầu.
+3. **SLA freshness nên đo ở ingest boundary hay publish boundary cho use case này?**
+   - **Trả lời:** Nên thực hiện đo ở cả hai ranh giới. Ingest boundary giúp xác định độ mới của dữ liệu từ nguồn cấp, còn Publish boundary đo lường hiệu suất xử lý của chính pipeline. Việc kết hợp cả hai đầu giúp tôi dễ dàng xác định nguyên nhân nếu dữ liệu bị cũ.

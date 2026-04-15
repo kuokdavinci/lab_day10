@@ -2,7 +2,7 @@
 """
 Chạy bộ câu grading (retrieval + keyword) — output JSONL cho giảng viên.
 
-  python grading_run.py --out artifacts/eval/grading_run.jsonl
+  python grading_run.py --questions data/grading_questions.json --out artifacts/eval/grading_run.jsonl
 
 Yêu cầu: đã chạy `python etl_pipeline.py run` trước để có collection Chroma.
 """
@@ -42,17 +42,25 @@ def main() -> int:
         return 1
 
     qpath = Path(args.questions)
-    qs = json.loads(qpath.read_text(encoding="utf-8"))
+    if not qpath.is_file():
+        print(f"ERROR: questions file not found: {qpath}", file=sys.stderr)
+        return 1
+
+    # Fix: use utf-8-sig to handle potential BOM from instructor files
+    try:
+        qs = json.loads(qpath.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        print(f"ERROR loading questions: {e}", file=sys.stderr)
+        return 1
+
     db_path = os.environ.get("CHROMA_DB_PATH", str(ROOT / "chroma_db"))
     collection_name = os.environ.get("CHROMA_COLLECTION", "day10_kb")
     provider = os.environ.get("EMBEDDING_PROVIDER", "jina").strip().lower()
     model_name = os.environ.get("EMBEDDING_MODEL", "jina-embeddings-v3").strip()
-    if provider != "jina":
-        print("Only Jina embedding is supported. Set EMBEDDING_PROVIDER=jina", file=sys.stderr)
-        return 1
+    
     api_key = os.environ.get("JINA_API_KEY", "").strip()
     if not api_key:
-        print("Missing JINA_API_KEY for EMBEDDING_PROVIDER=jina", file=sys.stderr)
+        print("Missing JINA_API_KEY", file=sys.stderr)
         return 1
 
     client = chromadb.PersistentClient(path=db_path)
@@ -69,15 +77,17 @@ def main() -> int:
             docs = (res.get("documents") or [[]])[0]
             metas = (res.get("metadatas") or [[]])[0]
             blob = " ".join(docs).lower()
+            
             must_any = [x.lower() for x in q.get("must_contain_any", [])]
             forbidden = [x.lower() for x in q.get("must_not_contain", [])]
+            
             ok_any = any(m in blob for m in must_any) if must_any else True
             bad_forb = any(m in blob for m in forbidden) if forbidden else False
+            
             top_doc = (metas[0] or {}).get("doc_id", "") if metas else ""
             want_top1 = (q.get("expect_top1_doc_id") or "").strip()
-            top1_ok = True
-            if want_top1:
-                top1_ok = top_doc == want_top1
+            top1_ok = (top_doc == want_top1) if want_top1 else True
+            
             rec = {
                 "id": q.get("id"),
                 "question": text,
@@ -89,6 +99,7 @@ def main() -> int:
                 "grading_criteria": q.get("grading_criteria", []),
             }
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            
     print(f"Wrote {out}")
     return 0
 
